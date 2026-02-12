@@ -1,9 +1,0 @@
-name: DiceR
-description: Randomizer with logic to prevent repetition until exhaustion and include new content while maintaining list integrity.
-version: 1.0
-ui:
-  requires: []
-  javascript:
-    - randomlogic.js
-  css:
-    - randomlogicstyle.css
