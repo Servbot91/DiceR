@@ -2,7 +2,7 @@
   name: DiceR
   metadata:
     description: Randomizer with logic to prevent repetition until exhaustion and include new content while actively maintaining list integrity.
-  version: 1.0-
-  date: 2026-02-12 13:53:10
+  version: 1.01c06da7
+  date: 2026-02-12 15:37:31
   path: https://github.com/Servbot91/HotorNot-Stat-Addon/raw/refs/heads/main/plugins/HotorNotStats.zip
-  sha256: 638726f173e1288c9a47a0b36dfd6fd1a38ac433328acef983548112a604cd9f
+  sha256: bde10f484d510748e6aa14a2963a042f643d28df38ac6f836d0953c89f9f7d76
