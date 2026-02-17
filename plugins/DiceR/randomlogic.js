@@ -1,20 +1,77 @@
 (function() {
   'use strict';
 
+  /* ==========================
+     ADVANCED DEBUG LOGGER
+  ========================== */
+
+  const DEBUG = true;
+  let rollCount = 0;
+
+  const DiceRLogger = {
+    styles: {
+      base: "font-weight:600;padding:2px 6px;border-radius:4px;",
+      info: "background:#1e90ff;color:white;",
+      success: "background:#28a745;color:white;",
+      warn: "background:#ff9800;color:black;",
+      error: "background:#e53935;color:white;",
+      event: "background:#6f42c1;color:white;"
+    },
+
+    log(type, label, data = null) {
+      if (!DEBUG) return;
+
+      const time = new Date().toISOString().split("T")[1].replace("Z", "");
+      const style = this.styles[type] || this.styles.info;
+
+      console.groupCollapsed(
+        `%c DiceR %c ${type.toUpperCase()} %c ${label} %c ${time}`,
+        this.styles.base + "background:#222;color:#fff;",
+        this.styles.base + style,
+        "font-weight:600;",
+        "color:#999;font-size:11px;"
+      );
+
+      if (data !== null) console.log(data);
+
+      console.groupEnd();
+    },
+
+    time(label) {
+      if (!DEBUG) return;
+      console.time(`⏱ DiceR ${label}`);
+    },
+
+    timeEnd(label) {
+      if (!DEBUG) return;
+      console.timeEnd(`⏱ DiceR ${label}`);
+    }
+  };
+
+  DiceRLogger.log("success", "Plugin initialized");
+
+  /* ==========================
+     HELPERS
+  ========================== */
+
   function getIdFromPath(regex) {
-    let m = window.location.pathname.match(regex);
+    const m = window.location.pathname.match(regex);
+    DiceRLogger.log("info", "getIdFromPath", { regex: regex.toString(), result: m ? m[1] : null });
     return m ? m[1] : null;
   }
 
   function getPlural(entity) {
-    return (entity === "Gallery") ? "Galleries"
-      : (entity === "Tag") ? "Tags"
-      : (entity === "Image") ? "Images"
-      : (entity === "Scene") ? "Scenes"
-      : (entity === "Performer") ? "Performers"
-      : (entity === "Studio") ? "Studios"
-      : (entity === "Group") ? "Groups"
-      : entity + "s";
+    const plural =
+      (entity === "Gallery") ? "Galleries" :
+      (entity === "Tag") ? "Tags" :
+      (entity === "Image") ? "Images" :
+      (entity === "Scene") ? "Scenes" :
+      (entity === "Performer") ? "Performers" :
+      (entity === "Studio") ? "Studios" :
+      (entity === "Group") ? "Groups" :
+      entity + "s";
+
+    return plural;
   }
 
   function getCacheKey(entity, internalFilter) {
@@ -41,7 +98,15 @@
     return true;
   }
 
+  /* ==========================
+     RANDOM CORE
+  ========================== */
+
   async function randomGlobal(entity, idField, redirectPrefix, internalFilter) {
+
+    rollCount++;
+    DiceRLogger.log("event", `🎲 Roll #${rollCount}`, { entity, internalFilter });
+
     const realEntityPlural = getPlural(entity);
     const cacheKey = getCacheKey(entity, internalFilter);
 
@@ -65,6 +130,10 @@
       }
     `;
 
+    DiceRLogger.log("info", "Running GraphQL query", { entity });
+
+    DiceRLogger.time("GraphQL Request");
+
     let resp = await fetch('/graphql', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -72,32 +141,39 @@
     });
 
     let data = await resp.json();
+
+    DiceRLogger.timeEnd("GraphQL Request");
+
     if (data.errors) {
+      DiceRLogger.log("error", "GraphQL errors", data.errors);
       alert("Error: " + JSON.stringify(data.errors));
       return;
     }
 
     let items = data.data[`find${realEntityPlural}`][idField];
+
     if (!items || items.length === 0) {
+      DiceRLogger.log("warn", "No results found");
       alert("No results found.");
       return;
     }
 
     const currentIds = items.map(i => i.id);
 
+    DiceRLogger.log("success", "Fetched IDs", { count: currentIds.length });
+
     let stored = JSON.parse(localStorage.getItem(cacheKey) || "null");
 
-    // If no cache OR library changed → rebuild
     if (!stored || !arraysEqual(stored.allIds, currentIds)) {
-      const shuffled = shuffleArray([...currentIds]);
+      DiceRLogger.log("warn", "Cache rebuilt");
       stored = {
         allIds: currentIds,
-        remaining: shuffled
+        remaining: shuffleArray([...currentIds])
       };
     }
 
-    // If exhausted → reshuffle
     if (stored.remaining.length === 0) {
+      DiceRLogger.log("warn", "Cache exhausted — reshuffling");
       stored.remaining = shuffleArray([...stored.allIds]);
     }
 
@@ -105,11 +181,21 @@
 
     localStorage.setItem(cacheKey, JSON.stringify(stored));
 
+    DiceRLogger.log("success", "Redirecting", {
+      nextId,
+      remaining: stored.remaining.length
+    });
+
     window.location.href = `${redirectPrefix}${nextId}`;
   }
 
+  /* ==========================
+     BUTTON HANDLER
+  ========================== */
+
   async function randomButtonHandler() {
     const pathname = window.location.pathname.replace(/\/$/, '');
+    DiceRLogger.log("event", "Button clicked", { pathname });
 
     if (pathname === '/scenes' || pathname === '/' || pathname === '' ||
         pathname === '/stats' || pathname === '/settings' ||
@@ -164,8 +250,13 @@
         galleries: { value: [galleryId], modifier: "INCLUDES_ALL" }
       });
 
+    DiceRLogger.log("error", "Unsupported path", { pathname });
     alert('Not supported');
   }
+
+  /* ==========================
+     BUTTON INJECTION
+  ========================== */
 
   function addRandomButton() {
     if (document.querySelector('.random-btn')) return;
@@ -185,16 +276,19 @@
       .addEventListener('click', randomButtonHandler);
 
     navContainer.appendChild(container);
+
+    DiceRLogger.log("success", "Random button added");
   }
 
-const observer = new MutationObserver(() => {
-  if (document.querySelector('.navbar-buttons.flex-row.ml-auto.order-xl-2.navbar-nav')) {
-    addRandomButton();
-    observer.disconnect(); // stop observing once added
-  }
-});
+  const observer = new MutationObserver(() => {
+    if (document.querySelector('.navbar-buttons.flex-row.ml-auto.order-xl-2.navbar-nav')) {
+      addRandomButton();
+      observer.disconnect();
+      DiceRLogger.log("event", "Observer disconnected");
+    }
+  });
 
-observer.observe(document.body, { childList: true, subtree: true });
+  observer.observe(document.body, { childList: true, subtree: true });
 
   document.addEventListener('click', () => setTimeout(addRandomButton, 1200));
   window.addEventListener('popstate', () => setTimeout(addRandomButton, 1200));
