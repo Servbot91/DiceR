@@ -164,14 +164,42 @@
 
     let stored = JSON.parse(localStorage.getItem(cacheKey) || "null");
 
-    if (!stored || !arraysEqual(stored.allIds, currentIds)) {
-      DiceRLogger.log("warn", "Cache rebuilt");
-      stored = {
-        allIds: currentIds,
-        remaining: shuffleArray([...currentIds])
-      };
-    }
+	if (!stored) {
+	  // First Cache Run
+	  DiceRLogger.log("warn", "Cache created (first run)");
+	  stored = {
+		allIds: currentIds,
+		remaining: shuffleArray([...currentIds])
+	  };
+	} else {
 
+	  const oldAll = new Set(stored.allIds);
+	  const currentSet = new Set(currentIds);
+
+	  // Detect added IDs
+	  const added = currentIds.filter(id => !oldAll.has(id));
+
+	  // Detect removed IDs
+	  const removed = stored.allIds.filter(id => !currentSet.has(id));
+
+	  if (added.length > 0 || removed.length > 0) {
+		DiceRLogger.log("warn", "Cache updated (incremental)", {
+		  added,
+		  removed
+		});
+
+		// Remove deleted IDs from remaining
+		stored.remaining = stored.remaining.filter(id => currentSet.has(id));
+
+		// Add new IDs randomly into remaining
+		const shuffledAdded = shuffleArray([...added]);
+		stored.remaining.push(...shuffledAdded);
+
+		// Update master list
+		stored.allIds = currentIds;
+	  }
+	}
+	
     if (stored.remaining.length === 0) {
       DiceRLogger.log("warn", "Cache exhausted — reshuffling");
       stored.remaining = shuffleArray([...stored.allIds]);
