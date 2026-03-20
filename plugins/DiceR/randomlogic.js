@@ -81,34 +81,280 @@
   }
 
   function shuffleArray(array) {
-    for (let i = array.length - 1; i > 0; i--) {
+    const newArray = [...array];
+    for (let i = newArray.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
-      [array[i], array[j]] = [array[j], array[i]];
+      [newArray[i], newArray[j]] = [newArray[j], newArray[i]];
     }
-    return array;
-  }
-
-  function arraysEqual(a, b) {
-    if (!a || !b) return false;
-    if (a.length !== b.length) return false;
-    const setA = new Set(a);
-    for (let id of b) {
-      if (!setA.has(id)) return false;
-    }
-    return true;
+    return newArray;
   }
 
   /* ==========================
-     RANDOM CORE
+     HYBRID RANDOM SYSTEM
   ========================== */
 
   async function randomGlobal(entity, idField, redirectPrefix, internalFilter) {
-
     rollCount++;
     DiceRLogger.log("event", `🎲 Roll #${rollCount}`, { entity, internalFilter });
 
-    const realEntityPlural = getPlural(entity);
     const cacheKey = getCacheKey(entity, internalFilter);
+    const shouldUseSampling = (entity === "Image" || entity === "Scene") && !internalFilter;
+
+    if (shouldUseSampling) {
+      return await randomWithSamplingAndTracking(entity, idField, redirectPrefix, internalFilter, cacheKey);
+    }
+
+    return await randomWithFullCache(entity, idField, redirectPrefix, internalFilter, cacheKey);
+  }
+
+  // NEW: Hybrid approach for large collections with seen/unseen tracking
+  async function randomWithSamplingAndTracking(entity, idField, redirectPrefix, internalFilter, cacheKey) {
+    const realEntityPlural = getPlural(entity);
+    
+    // Load cache for seen tracking
+    let stored = JSON.parse(localStorage.getItem(cacheKey) || "null");
+    
+    // Initialize cache structure if needed
+    if (!stored) {
+      stored = {
+        seenIds: new Set(),           // Track what we've seen
+        unseenCount: null,            // Total count from last check
+        lastChecked: 0,               // Timestamp of last count check
+        sampledPages: new Map()       // Track sampled pages to avoid immediate repeats
+      };
+    } else {
+      // Convert array to Set for better performance
+      stored.seenIds = new Set(stored.seenIds || []);
+    }
+
+    // Refresh total count periodically (every 5 minutes)
+    const now = Date.now();
+    const shouldRefreshCount = !stored.unseenCount || (now - stored.lastChecked) > 300000;
+    
+    if (shouldRefreshCount) {
+      DiceRLogger.log("info", "Refreshing total count");
+      
+      let countFilterArg = "";
+      let countFilterVar = "";
+      let countVariables = {};
+      
+      if (internalFilter) {
+        countFilterArg = `, $internal_filter: ${entity}FilterType`;
+        countFilterVar = `, ${entity.toLowerCase()}_filter: $internal_filter`;
+        countVariables.internal_filter = internalFilter;
+      }
+
+      const countQuery = `
+        query Count${realEntityPlural}($filter: FindFilterType${countFilterArg}) {
+          find${realEntityPlural}(filter: $filter${countFilterVar}) {
+            count
+          }
+        }
+      `;
+
+      try {
+        let countResp = await fetch('/graphql', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            query: countQuery, 
+            variables: { filter: {}, ...countVariables } 
+          })
+        });
+        let countData = await countResp.json();
+
+        if (!countData.errors) {
+          stored.unseenCount = countData.data[`find${realEntityPlural}`].count;
+          stored.lastChecked = now;
+          DiceRLogger.log("info", "Updated total count", { count: stored.unseenCount });
+        }
+      } catch (error) {
+        DiceRLogger.log("error", "Failed to get count", error);
+      }
+    }
+
+    // Try to find an item that hasn't been seen
+    let attempts = 0;
+    const maxAttempts = 10;
+    let selectedItem = null;
+    let selectedId = null;
+
+    while (attempts < maxAttempts && !selectedItem) {
+      attempts++;
+      
+      // Get random item using sampling
+      const itemResult = await getRandomItemBySampling(entity, idField, internalFilter);
+      
+      if (itemResult && itemResult.item && itemResult.id) {
+        // Check if we've seen this item before
+        if (!stored.seenIds.has(itemResult.id)) {
+          selectedItem = itemResult.item;
+          selectedId = itemResult.id;
+          break;
+        } else {
+          DiceRLogger.log("info", "Skipping already seen item", { attempts });
+        }
+      }
+    }
+
+    // If we couldn't find an unseen item, either reshuffle or pick one anyway
+    if (!selectedItem) {
+      DiceRLogger.log("warn", "All items may have been seen, allowing repeats");
+      
+      // Clear seen tracking to allow repeats (or keep going with repeats)
+      const sampleResult = await getRandomItemBySampling(entity, idField, internalFilter);
+      if (sampleResult && sampleResult.item) {
+        selectedItem = sampleResult.item;
+        selectedId = sampleResult.id;
+      }
+      
+      // Optional: Reset seen tracking periodically
+      if (stored.seenIds.size > (stored.unseenCount || 10000) * 0.9) {
+        DiceRLogger.log("warn", "Resetting seen tracking - most items seen");
+        stored.seenIds.clear();
+      }
+    }
+
+    if (selectedItem && selectedId) {
+      // Mark as seen
+      stored.seenIds.add(selectedId);
+      
+      // Save updated cache
+      const cacheToSave = {
+        seenIds: Array.from(stored.seenIds),
+        unseenCount: stored.unseenCount,
+        lastChecked: stored.lastChecked,
+        sampledPages: {} // Don't persist page tracking to save space
+      };
+      localStorage.setItem(cacheKey, JSON.stringify(cacheToSave));
+
+	  // EXPLICIT CONSOLE LOG to ensure visibility
+	  console.log(`🎯 DiceR: Selected ${entity} ID ${selectedId} (${stored.seenIds.size}/${stored.unseenCount} seen)`);
+
+
+      DiceRLogger.log("success", "Selected random item", {
+        itemId: selectedId,
+        seenCount: stored.seenIds.size,
+        totalEstimated: stored.unseenCount
+      });
+
+      window.location.href = `${redirectPrefix}${selectedId}`;
+    } else {
+      DiceRLogger.log("error", "Failed to select item after max attempts");
+      alert("Unable to select random item.");
+    }
+  }
+
+  // Helper function to get random item via sampling
+  async function getRandomItemBySampling(entity, idField, internalFilter) {
+    const realEntityPlural = getPlural(entity);
+    
+    // First get total count
+    let countFilterArg = "";
+    let countFilterVar = "";
+    let countVariables = {};
+    
+    if (internalFilter) {
+      countFilterArg = `, $internal_filter: ${entity}FilterType`;
+      countFilterVar = `, ${entity.toLowerCase()}_filter: $internal_filter`;
+      countVariables.internal_filter = internalFilter;
+    }
+
+    const countQuery = `
+      query Count${realEntityPlural}($filter: FindFilterType${countFilterArg}) {
+        find${realEntityPlural}(filter: $filter${countFilterVar}) {
+          count
+        }
+      }
+    `;
+
+    try {
+      let countResp = await fetch('/graphql', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          query: countQuery, 
+          variables: { filter: {}, ...countVariables } 
+        })
+      });
+      let countData = await countResp.json();
+
+      if (countData.errors) {
+        return null;
+      }
+
+      const totalCount = countData.data[`find${realEntityPlural}`].count;
+      
+      if (totalCount === 0) {
+        return null;
+      }
+
+      // Generate random page and offset
+      const pageSize = 1000;
+      const totalPages = Math.ceil(totalCount / pageSize);
+      const randomPage = Math.floor(Math.random() * totalPages);
+      const itemsInLastPage = totalCount % pageSize || pageSize;
+      const maxOffset = (randomPage === totalPages - 1) ? itemsInLastPage : pageSize;
+      const randomOffsetInPage = Math.floor(Math.random() * maxOffset);
+
+      // Fetch the specific page
+      let filterArg = "";
+      let filterVar = "";
+      let variables = {
+        filter: { 
+          per_page: pageSize,
+          page: randomPage + 1
+        }
+      };
+
+      if (internalFilter) {
+        filterArg = `, $internal_filter: ${entity}FilterType`;
+        filterVar = `, ${entity.toLowerCase()}_filter: $internal_filter`;
+        variables.internal_filter = internalFilter;
+      }
+
+      const pageQuery = `
+        query Find${realEntityPlural}($filter: FindFilterType${filterArg}) {
+          find${realEntityPlural}(filter: $filter${filterVar}) {
+            ${idField} { id }
+          }
+        }
+      `;
+
+      let pageResp = await fetch('/graphql', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: pageQuery, variables })
+      });
+      let pageData = await pageResp.json();
+
+      if (pageData.errors) {
+        return null;
+      }
+
+      let items = pageData.data[`find${realEntityPlural}`][idField];
+
+      if (!items || items.length === 0) {
+        return null;
+      }
+
+      // Select random item from the page
+      const randomIndex = randomOffsetInPage < items.length ? randomOffsetInPage : Math.floor(Math.random() * items.length);
+      const selectedItem = items[randomIndex];
+
+      return {
+        item: selectedItem,
+        id: selectedItem.id
+      };
+    } catch (error) {
+      DiceRLogger.log("error", "Sampling failed", error);
+      return null;
+    }
+  }
+
+  // Existing cache-based approach for smaller collections
+  async function randomWithFullCache(entity, idField, redirectPrefix, internalFilter, cacheKey) {
+    const realEntityPlural = getPlural(entity);
 
     let filterArg = "";
     let filterVar = "";
@@ -131,7 +377,6 @@
     `;
 
     DiceRLogger.log("info", "Running GraphQL query", { entity });
-
     DiceRLogger.time("GraphQL Request");
 
     let resp = await fetch('/graphql', {
@@ -141,7 +386,6 @@
     });
 
     let data = await resp.json();
-
     DiceRLogger.timeEnd("GraphQL Request");
 
     if (data.errors) {
@@ -159,62 +403,55 @@
     }
 
     const currentIds = items.map(i => i.id);
-
     DiceRLogger.log("success", "Fetched IDs", { count: currentIds.length });
 
     let stored = JSON.parse(localStorage.getItem(cacheKey) || "null");
 
-	if (!stored) {
-	  // First Cache Run
-	  DiceRLogger.log("warn", "Cache created (first run)");
-	  stored = {
-		allIds: currentIds,
-		remaining: shuffleArray([...currentIds])
-	  };
-	} else {
+    if (!stored) {
+      DiceRLogger.log("warn", "Cache created (first run)");
+      stored = {
+        allIds: currentIds,
+        remaining: shuffleArray([...currentIds])
+      };
+    } else {
+      const oldAll = new Set(stored.allIds);
+      const currentSet = new Set(currentIds);
 
-	  const oldAll = new Set(stored.allIds);
-	  const currentSet = new Set(currentIds);
+      const added = currentIds.filter(id => !oldAll.has(id));
+      const removed = stored.allIds.filter(id => !currentSet.has(id));
 
-	  // Detect added IDs
-	  const added = currentIds.filter(id => !oldAll.has(id));
+      if (added.length > 0 || removed.length > 0) {
+        DiceRLogger.log("warn", "Cache updated (incremental)", {
+          added: added.length,
+          removed: removed.length
+        });
 
-	  // Detect removed IDs
-	  const removed = stored.allIds.filter(id => !currentSet.has(id));
-
-	  if (added.length > 0 || removed.length > 0) {
-		DiceRLogger.log("warn", "Cache updated (incremental)", {
-		  added,
-		  removed
-		});
-
-		// Remove deleted IDs from remaining
-		stored.remaining = stored.remaining.filter(id => currentSet.has(id));
-
-		// Add new IDs randomly into remaining
-		const shuffledAdded = shuffleArray([...added]);
-		stored.remaining.push(...shuffledAdded);
-
-		// Update master list
-		stored.allIds = currentIds;
-	  }
-	}
-	
+        stored.remaining = stored.remaining.filter(id => currentSet.has(id));
+        const shuffledAdded = shuffleArray([...added]);
+        stored.remaining.push(...shuffledAdded);
+        stored.allIds = currentIds;
+      }
+    }
+    
     if (stored.remaining.length === 0) {
       DiceRLogger.log("warn", "Cache exhausted — reshuffling");
       stored.remaining = shuffleArray([...stored.allIds]);
     }
 
-    const nextId = stored.remaining.pop();
+    if (stored.remaining.length > 0) {
+      const nextId = stored.remaining.pop();
+      localStorage.setItem(cacheKey, JSON.stringify(stored));
 
-    localStorage.setItem(cacheKey, JSON.stringify(stored));
+      DiceRLogger.log("success", "Redirecting", {
+        nextId,
+        remaining: stored.remaining.length
+      });
 
-    DiceRLogger.log("success", "Redirecting", {
-      nextId,
-      remaining: stored.remaining.length
-    });
-
-    window.location.href = `${redirectPrefix}${nextId}`;
+      window.location.href = `${redirectPrefix}${nextId}`;
+    } else {
+      DiceRLogger.log("error", "No items available to select");
+      alert("No items available to select.");
+    }
   }
 
   /* ==========================
@@ -282,44 +519,66 @@
     alert('Not supported');
   }
 
-  /* ==========================
-     BUTTON INJECTION
-  ========================== */
+/* ==========================
+   BUTTON INJECTION
+========================== */
 
-  function addRandomButton() {
-    if (document.querySelector('.random-btn')) return;
+function addRandomButton() {
+  if (document.querySelector('.random-btn')) return;
 
-    const navContainer = document.querySelector('.navbar-buttons.flex-row.ml-auto.order-xl-2.navbar-nav');
-    if (!navContainer) return;
+  const navContainer = document.querySelector('.navbar-buttons.flex-row.ml-auto.order-xl-2.navbar-nav');
+  if (!navContainer) return;
 
-    const container = document.createElement('div');
-    container.className = 'mr-2';
-    container.innerHTML = `
-      <a href="javascript:void(0)">
-        <button type="button" class="btn btn-primary random-btn">🎲Roll</button>
-      </a>
-    `;
+  const container = document.createElement('div');
+  container.className = 'mr-2';
+  container.innerHTML = `
+    <a href="javascript:void(0)">
+      <button type="button" class="btn btn-primary random-btn">🎲Roll</button>
+    </a>
+  `;
 
-    container.querySelector('button')
-      .addEventListener('click', randomButtonHandler);
-
-    navContainer.appendChild(container);
-
-    DiceRLogger.log("success", "Random button added");
-  }
-
-  const observer = new MutationObserver(() => {
-    if (document.querySelector('.navbar-buttons.flex-row.ml-auto.order-xl-2.navbar-nav')) {
-      addRandomButton();
-      observer.disconnect();
-      DiceRLogger.log("event", "Observer disconnected");
+  const button = container.querySelector('button');
+  button.addEventListener('click', async function(e) {
+    // Add visual feedback immediately
+    const originalText = button.textContent;
+    const originalClasses = button.className;
+    
+    // Visual feedback states
+    button.textContent = '🎲Rolling...';
+    button.className = 'btn btn-warning random-btn'; // Change to yellow
+    button.disabled = true; // Prevent multiple clicks
+    
+    try {
+      // Call the main handler
+      await randomButtonHandler.call(this, e);
+      
+      // Keep the visual feedback for a moment so user sees it
+      await new Promise(resolve => setTimeout(resolve, 500));
+    } catch (error) {
+      // Restore button on error
+      button.textContent = originalText;
+      button.className = originalClasses;
+      button.disabled = false;
+      DiceRLogger.log("error", "Button handler error", error);
     }
   });
 
-  observer.observe(document.body, { childList: true, subtree: true });
+  navContainer.appendChild(container);
+  DiceRLogger.log("success", "Random button added");
+}
 
-  document.addEventListener('click', () => setTimeout(addRandomButton, 1200));
-  window.addEventListener('popstate', () => setTimeout(addRandomButton, 1200));
-  window.addEventListener('hashchange', () => setTimeout(addRandomButton, 1200));
+const observer = new MutationObserver(() => {
+  if (document.querySelector('.navbar-buttons.flex-row.ml-auto.order-xl-2.navbar-nav')) {
+    addRandomButton();
+    observer.disconnect();
+    DiceRLogger.log("event", "Observer disconnected");
+  }
+});
+
+observer.observe(document.body, { childList: true, subtree: true });
+
+document.addEventListener('click', () => setTimeout(addRandomButton, 1200));
+window.addEventListener('popstate', () => setTimeout(addRandomButton, 1200));
+window.addEventListener('hashchange', () => setTimeout(addRandomButton, 1200));
 
 })();
