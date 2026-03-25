@@ -98,7 +98,7 @@
     DiceRLogger.log("event", `🎲 Roll #${rollCount}`, { entity, internalFilter });
 
     const cacheKey = getCacheKey(entity, internalFilter);
-    const shouldUseSampling = (entity === "Image" || entity === "Scene") && !internalFilter;
+	const shouldUseSampling = (entity === "Image" || entity === "Scene" || entity === "Gallery") && !internalFilter;
 
     if (shouldUseSampling) {
       return await randomWithSamplingAndTracking(entity, idField, redirectPrefix, internalFilter, cacheKey);
@@ -246,111 +246,118 @@
   }
 
   // Helper function to get random item via sampling
-  async function getRandomItemBySampling(entity, idField, internalFilter) {
-    const realEntityPlural = getPlural(entity);
-    
-    // First get total count
-    let countFilterArg = "";
-    let countFilterVar = "";
-    let countVariables = {};
-    
-    if (internalFilter) {
-      countFilterArg = `, $internal_filter: ${entity}FilterType`;
-      countFilterVar = `, ${entity.toLowerCase()}_filter: $internal_filter`;
-      countVariables.internal_filter = internalFilter;
+async function getRandomItemBySampling(entity, idField, internalFilter) {
+  const realEntityPlural = getPlural(entity);
+  
+  // First get total count
+  let countFilterArg = "";
+  let countFilterVar = "";
+  let countVariables = {};
+  
+  if (internalFilter) {
+    countFilterArg = `, $internal_filter: ${entity}FilterType`;
+    countFilterVar = `, ${entity.toLowerCase()}_filter: $internal_filter`;
+    countVariables.internal_filter = internalFilter;
+  }
+
+  const countQuery = `
+    query Count${realEntityPlural}($filter: FindFilterType${countFilterArg}) {
+      find${realEntityPlural}(filter: $filter${countFilterVar}) {
+        count
+      }
+    }
+  `;
+
+  try {
+    let countResp = await fetch('/graphql', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        query: countQuery, 
+        variables: { filter: {}, ...countVariables } 
+      })
+    });
+    let countData = await countResp.json();
+
+    if (countData.errors) {
+      return null;
     }
 
-    const countQuery = `
-      query Count${realEntityPlural}($filter: FindFilterType${countFilterArg}) {
-        find${realEntityPlural}(filter: $filter${countFilterVar}) {
-          count
+    const totalCount = countData.data[`find${realEntityPlural}`].count;
+    
+    if (totalCount === 0) {
+      return null;
+    }
+
+    // Generate random page and offset
+    const pageSize = 1000;
+    const totalPages = Math.ceil(totalCount / pageSize);
+    const randomPage = Math.floor(Math.random() * totalPages);
+    const itemsInLastPage = totalCount % pageSize || pageSize;
+    const maxOffset = (randomPage === totalPages - 1) ? itemsInLastPage : pageSize;
+    const randomOffsetInPage = Math.floor(Math.random() * maxOffset);
+
+    // *** KEY FIX: Add random sort to prevent chronological ordering ***
+    const sortOptions = ['created_at', 'updated_at', 'name', 'path', 'date']; // Add relevant sort fields
+    const randomSort = sortOptions[Math.floor(Math.random() * sortOptions.length)];
+    const sortDirection = Math.random() > 0.5 ? 'ASC' : 'DESC';
+
+    // Fetch the specific page
+    let filterArg = "";
+    let filterVar = "";
+    let variables = {
+      filter: { 
+        per_page: pageSize,
+        page: randomPage + 1,
+        sort: randomSort,
+        direction: sortDirection
+      }
+    };
+
+    if (internalFilter) {
+      filterArg = `, $internal_filter: ${entity}FilterType`;
+      filterVar = `, ${entity.toLowerCase()}_filter: $internal_filter`;
+      variables.internal_filter = internalFilter;
+    }
+
+    const pageQuery = `
+      query Find${realEntityPlural}($filter: FindFilterType${filterArg}) {
+        find${realEntityPlural}(filter: $filter${filterVar}) {
+          ${idField} { id }
         }
       }
     `;
 
-    try {
-      let countResp = await fetch('/graphql', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          query: countQuery, 
-          variables: { filter: {}, ...countVariables } 
-        })
-      });
-      let countData = await countResp.json();
+    let pageResp = await fetch('/graphql', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: pageQuery, variables })
+    });
+    let pageData = await pageResp.json();
 
-      if (countData.errors) {
-        return null;
-      }
-
-      const totalCount = countData.data[`find${realEntityPlural}`].count;
-      
-      if (totalCount === 0) {
-        return null;
-      }
-
-      // Generate random page and offset
-      const pageSize = 1000;
-      const totalPages = Math.ceil(totalCount / pageSize);
-      const randomPage = Math.floor(Math.random() * totalPages);
-      const itemsInLastPage = totalCount % pageSize || pageSize;
-      const maxOffset = (randomPage === totalPages - 1) ? itemsInLastPage : pageSize;
-      const randomOffsetInPage = Math.floor(Math.random() * maxOffset);
-
-      // Fetch the specific page
-      let filterArg = "";
-      let filterVar = "";
-      let variables = {
-        filter: { 
-          per_page: pageSize,
-          page: randomPage + 1
-        }
-      };
-
-      if (internalFilter) {
-        filterArg = `, $internal_filter: ${entity}FilterType`;
-        filterVar = `, ${entity.toLowerCase()}_filter: $internal_filter`;
-        variables.internal_filter = internalFilter;
-      }
-
-      const pageQuery = `
-        query Find${realEntityPlural}($filter: FindFilterType${filterArg}) {
-          find${realEntityPlural}(filter: $filter${filterVar}) {
-            ${idField} { id }
-          }
-        }
-      `;
-
-      let pageResp = await fetch('/graphql', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: pageQuery, variables })
-      });
-      let pageData = await pageResp.json();
-
-      if (pageData.errors) {
-        return null;
-      }
-
-      let items = pageData.data[`find${realEntityPlural}`][idField];
-
-      if (!items || items.length === 0) {
-        return null;
-      }
-
-      // Select random item from the page
-      const randomIndex = randomOffsetInPage < items.length ? randomOffsetInPage : Math.floor(Math.random() * items.length);
-      const selectedItem = items[randomIndex];
-
-      return {
-        item: selectedItem,
-        id: selectedItem.id
-      };
-    } catch (error) {
-      DiceRLogger.log("error", "Sampling failed", error);
+    if (pageData.errors) {
       return null;
     }
+
+    let items = pageData.data[`find${realEntityPlural}`][idField];
+
+    if (!items || items.length === 0) {
+      return null;
+    }
+
+    // Select random item from the page
+    const randomIndex = randomOffsetInPage < items.length ? randomOffsetInPage : Math.floor(Math.random() * items.length);
+    const selectedItem = items[randomIndex];
+
+    return {
+      item: selectedItem,
+      id: selectedItem.id
+    };
+  } catch (error) {
+    DiceRLogger.log("error", "Sampling failed", error);
+    return null;
   }
+}
 
   // Existing cache-based approach for smaller collections
   async function randomWithFullCache(entity, idField, redirectPrefix, internalFilter, cacheKey) {
@@ -458,66 +465,145 @@
      BUTTON HANDLER
   ========================== */
 
-  async function randomButtonHandler() {
-    const pathname = window.location.pathname.replace(/\/$/, '');
-    DiceRLogger.log("event", "Button clicked", { pathname });
+async function randomButtonHandler() {
+  const pathname = window.location.pathname.replace(/\/$/, '');
+  const searchParams = new URLSearchParams(window.location.search);
+  DiceRLogger.log("event", "Button clicked", { pathname, searchParams: window.location.search });
 
-    if (pathname === '/scenes' || pathname === '/' || pathname === '' ||
-        pathname === '/stats' || pathname === '/settings' ||
-        pathname === '/scenes/markers' || /^\/scenes\/\d+$/.test(pathname))
-      return randomGlobal('Scene', 'scenes', '/scenes/');
-
-    if (pathname === '/images' || /^\/images\/\d+$/.test(pathname))
-      return randomGlobal('Image', 'images', '/images/');
-
-    if (pathname === '/performers')
-      return randomGlobal('Performer', 'performers', '/performers/');
-
-    if (pathname === '/studios')
-      return randomGlobal('Studio', 'studios', '/studios/');
-
-    if (pathname === '/tags')
-      return randomGlobal('Tag', 'tags', '/tags/');
-
-    if (pathname === '/groups')
-      return randomGlobal('Group', 'groups', '/groups/');
-
-    if (pathname === '/galleries')
-      return randomGlobal('Gallery', 'galleries', '/galleries/');
-
-    let studioId = getIdFromPath(/^\/studios\/(\d+)\/scenes/);
-    if (studioId)
-      return randomGlobal('Scene', 'scenes', '/scenes/', {
-        studios: { value: [studioId], modifier: "INCLUDES_ALL" }
-      });
-
-    let groupId = getIdFromPath(/^\/groups\/(\d+)\/scenes/);
-    if (groupId)
-      return randomGlobal('Scene', 'scenes', '/scenes/', {
-        groups: { value: [groupId], modifier: "INCLUDES_ALL" }
-      });
-
-    let performerId = getIdFromPath(/^\/performers\/(\d+)\/scenes/);
-    if (performerId)
-      return randomGlobal('Scene', 'scenes', '/scenes/', {
-        performers: { value: [performerId], modifier: "INCLUDES_ALL" }
-      });
-
-    let tagId = getIdFromPath(/^\/tags\/(\d+)\/scenes/);
-    if (tagId)
-      return randomGlobal('Scene', 'scenes', '/scenes/', {
-        tags: { value: [tagId], modifier: "INCLUDES_ALL" }
-      });
-
-    let galleryId = getIdFromPath(/^\/galleries\/(\d+)$/);
-    if (galleryId)
-      return randomGlobal('Image', 'images', '/images/', {
-        galleries: { value: [galleryId], modifier: "INCLUDES_ALL" }
-      });
-
-    DiceRLogger.log("error", "Unsupported path", { pathname });
-    alert('Not supported');
+  // Handle main galleries list page (with or without filters)
+  if (pathname === '/galleries') {
+    // Preserve all current filters by including them in the redirect
+    const currentUrl = new URL(window.location.href);
+    const search = currentUrl.search;
+    
+    // For filtered galleries, we need to apply the same filters to the random selection
+    const filterParam = searchParams.get('c');
+    if (filterParam) {
+      try {
+        const internalFilter = convertUrlFilterToInternalFilter(filterParam);
+        return randomGlobal('Gallery', 'galleries', '/galleries/', internalFilter);
+      } catch (e) {
+        DiceRLogger.log("error", "Failed to convert filters", e);
+        return randomGlobal('Gallery', 'galleries', '/galleries/');
+      }
+    }
+    return randomGlobal('Gallery', 'galleries', '/galleries/');
   }
+
+  // Handle specific gallery page - should roll to another gallery
+  let galleryId = getIdFromPath(/^\/galleries\/(\d+)/);
+  if (galleryId) {
+    // If we're on a specific gallery page, roll to another gallery (preserve any filters if possible)
+    const filterParam = searchParams.get('c');
+    if (filterParam) {
+      try {
+        const internalFilter = convertUrlFilterToInternalFilter(filterParam);
+        return randomGlobal('Gallery', 'galleries', '/galleries/', internalFilter);
+      } catch (e) {
+        DiceRLogger.log("error", "Failed to convert filters", e);
+        return randomGlobal('Gallery', 'galleries', '/galleries/');
+      }
+    }
+    return randomGlobal('Gallery', 'galleries', '/galleries/');
+  }
+
+  // Rest of your existing conditions...
+  if (pathname === '/scenes' || pathname === '/' || pathname === '' ||
+      pathname === '/stats' || pathname === '/settings' ||
+      pathname === '/scenes/markers' || /^\/scenes\/\d+$/.test(pathname))
+    return randomGlobal('Scene', 'scenes', '/scenes/');
+
+  if (pathname === '/images' || /^\/images\/\d+$/.test(pathname))
+    return randomGlobal('Image', 'images', '/images/');
+
+  if (pathname === '/performers')
+    return randomGlobal('Performer', 'performers', '/performers/');
+
+  if (pathname === '/studios')
+    return randomGlobal('Studio', 'studios', '/studios/');
+
+  if (pathname === '/tags')
+    return randomGlobal('Tag', 'tags', '/tags/');
+
+  if (pathname === '/groups')
+    return randomGlobal('Group', 'groups', '/groups/');
+
+  // Handle images within a specific gallery (from gallery image view)
+  let galleryImageId = getIdFromPath(/^\/galleries\/(\d+)\/images/);
+  if (galleryImageId)
+    return randomGlobal('Image', 'images', '/images/', {
+      galleries: { value: [galleryImageId], modifier: "INCLUDES_ALL" }
+    });
+
+  let studioId = getIdFromPath(/^\/studios\/(\d+)\/scenes/);
+  if (studioId)
+    return randomGlobal('Scene', 'scenes', '/scenes/', {
+      studios: { value: [studioId], modifier: "INCLUDES_ALL" }
+    });
+
+  let groupId = getIdFromPath(/^\/groups\/(\d+)\/scenes/);
+  if (groupId)
+    return randomGlobal('Scene', 'scenes', '/scenes/', {
+      groups: { value: [groupId], modifier: "INCLUDES_ALL" }
+    });
+
+  let performerId = getIdFromPath(/^\/performers\/(\d+)\/scenes/);
+  if (performerId)
+    return randomGlobal('Scene', 'scenes', '/scenes/', {
+      performers: { value: [performerId], modifier: "INCLUDES_ALL" }
+    });
+
+  let tagId = getIdFromPath(/^\/tags\/(\d+)\/scenes/);
+  if (tagId)
+    return randomGlobal('Scene', 'scenes', '/scenes/', {
+      tags: { value: [tagId], modifier: "INCLUDES_ALL" }
+    });
+
+  DiceRLogger.log("error", "Unsupported path", { pathname });
+  alert('Not supported');
+}
+
+// Convert URL filter format to internal GraphQL filter format
+function convertUrlFilterToInternalFilter(filterParam) {
+  try {
+    // Custom parser for the specific format used
+    // c=("type":"tags","modifier":"INCLUDES_ALL","value":("items":[],"excluded":[("id":"300","label":"Doujinshi")],"depth":-1))
+    const decoded = decodeURIComponent(filterParam);
+    
+    // Extract excluded tags if present
+    const excludedMatch = decoded.match(/"excluded":$$$(.*?)$$$/);
+    if (excludedMatch && excludedMatch[1]) {
+      // Extract tag IDs from the excluded array
+      const tagIds = [];
+      const excludedStr = excludedMatch[1];
+      const tagMatches = excludedStr.match(/"id":"([^"]+)"/g);
+      if (tagMatches) {
+        tagMatches.forEach(match => {
+          const idMatch = match.match(/"id":"([^"]+)"/);
+          if (idMatch && idMatch[1]) {
+            tagIds.push(idMatch[1]);
+          }
+        });
+      }
+      
+      if (tagIds.length > 0) {
+        return {
+          tags: {
+            value: tagIds,
+            modifier: "EXCLUDE"
+          }
+        };
+      }
+    }
+    
+    DiceRLogger.log("info", "Converted filter", { original: filterParam, converted: {} });
+    return {};
+  } catch (e) {
+    DiceRLogger.log("error", "Failed to convert filter", { filterParam, error: e.message });
+    return {};
+  }
+}
+
 
 /* ==========================
    BUTTON INJECTION
