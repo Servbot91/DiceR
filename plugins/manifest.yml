@@ -2,7 +2,7 @@
   name: DiceR
   metadata:
     description: Randomizer with logic to prevent repetition until exhaustion and include new content while actively maintaining list integrity.
-  version: 1.03ab49a6
-  date: 2026-03-20 21:36:53
+  version: 1.06778b3e
+  date: 2026-03-25 23:38:46
   path: https://github.com/Servbot91/DiceR/raw/refs/heads/main/plugins/DiceR.zip
-  sha256: b1863bd84fc68b461d631665f60eaaa36af01f93e1ec67bf1e0463fd1685f432
+  sha256: ed87f03604203adfa917e6d9b3dd65d4bc7577fc37fe7c0882b449ce7607f2a6
