@@ -18,5 +18,8 @@ DiceR(oll) is an improvement on the original [Stash](https://stashapp.cc/) plugi
 3. **New Content Handling**
     - It compares the freshly fetched list (`currentIds`) with the stored cache (`stored.allIds`) using `arraysEqual()`. **If the IDs have changed** (i.e., new content has been added or some items removed) the cache will update to include the new items.
 
+4. **Logging**
+    - You can verify the state of your local cached list via the F12 browser console menu. All functions are fully logged and color coded to assist with debug.
+
 ### Original Credit
 [random button](https://discourse.stashapp.cc/t/randombutton/1809) written by MrDocSabio. 
