@@ -5,7 +5,7 @@
      ADVANCED DEBUG LOGGER
   ========================== */
 
-  const DEBUG = true; // Enable detailed logging
+  const DEBUG = false; // Enable detailed logging
   let rollCount = 0;
 
   const DiceRLogger = {
@@ -61,8 +61,85 @@
     MAX_RETRY_ATTEMPTS: 5,
     PAGE_SIZE: 1000,
     REQUEST_TIMEOUT: 6000, // 6 seconds timeout
-    MAX_TIMEOUT_RETRIES: 3 // Number of retry attempts for timeouts
+    MAX_TIMEOUT_RETRIES: 3, // Number of retry attempts for timeouts
+    CACHE_VERSION: 2, // For cache structure validation
+    
+    // Mobile-specific configurations
+    MOBILE_PAGE_SIZE: 100, // Smaller page size for mobile
+    MOBILE_CACHE_REFRESH_INTERVAL: 15 * 60 * 1000, // Longer cache refresh
+    MOBILE_REQUEST_TIMEOUT: 10000, // Longer timeout for mobile networks
+    MOBILE_MAX_RETRY_ATTEMPTS: 3, // Fewer retries for mobile
+    MOBILE_MAX_ITEMS_TO_PROCESS: 5000, // Limit total items processed
+    ENABLE_THROTTLING: true,
+    THROTTLE_DELAY: 100, // ms between operations
+  
+    // Desktop-specific configurations
+    DESKTOP_PAGE_SIZE: 1000,
+    DESKTOP_REQUEST_TIMEOUT: 6000,
+    DESKTOP_MAX_RETRY_ATTEMPTS: 5
   };
+
+  // Device detection
+  const isMobile = /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+  const isLowPowerMode = navigator.connection && navigator.connection.effectiveType && 
+                      (navigator.connection.effectiveType.includes('slow') || 
+                       navigator.connection.effectiveType === '2g');  
+  // Apply device-specific configurations
+  if (isMobile) {
+    CONFIG.PAGE_SIZE = CONFIG.MOBILE_PAGE_SIZE;
+    CONFIG.REQUEST_TIMEOUT = CONFIG.MOBILE_REQUEST_TIMEOUT;
+    CONFIG.MAX_RETRY_ATTEMPTS = CONFIG.MOBILE_MAX_RETRY_ATTEMPTS;
+    DiceRLogger.log("info", "Mobile device detected - applying mobile optimizations");
+  } else {
+    CONFIG.PAGE_SIZE = CONFIG.DESKTOP_PAGE_SIZE;
+    CONFIG.REQUEST_TIMEOUT = CONFIG.DESKTOP_REQUEST_TIMEOUT;
+    CONFIG.MAX_RETRY_ATTEMPTS = CONFIG.DESKTOP_MAX_RETRY_ATTEMPTS;
+    DiceRLogger.log("info", "Desktop device detected - applying desktop optimizations");
+  }
+
+// Throttled processing for mobile
+function throttle(func, limit) {
+  let inThrottle;
+  return function() {
+    const args = arguments;
+    const context = this;
+    if (!inThrottle) {
+      func.apply(context, args);
+      inThrottle = true;
+      setTimeout(() => inThrottle = false, limit);
+    }
+  };
+}
+
+// Memory-efficient shuffle (Fisher-Yates with early termination)
+function efficientShuffle(array, maxElements = 1000) {
+  const len = Math.min(array.length, maxElements);
+  for (let i = len - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [array[i], array[j]] = [array[j], array[i]];
+  }
+  return array.slice(0, len);
+}
+
+  /* ==========================
+     UNIFORM ENTITY LOGGING
+  ========================== */
+
+  function logEntityAction(entity, action, details = {}) {
+    DiceRLogger.log("info", `${entity} - ${action}`, details);
+  }
+
+  function logEntitySuccess(entity, action, details = {}) {
+    DiceRLogger.log("success", `${entity} - ${action}`, details);
+  }
+
+  function logEntityWarning(entity, action, details = {}) {
+    DiceRLogger.log("warn", `${entity} - ${action}`, details);
+  }
+
+  function logEntityError(entity, action, details = {}) {
+    DiceRLogger.log("error", `${entity} - ${action}`, details);
+  }
 
   /* ==========================
      TIMEOUT HANDLING UTILITIES
@@ -98,7 +175,7 @@
         return await asyncFunction();
       } catch (error) {
         if (error.message === 'REQUEST_TIMEOUT' && attempt < maxRetries) {
-          DiceRLogger.log("warn", `Request timeout on attempt ${attempt}, retrying...`);
+          logEntityWarning("System", "Request timeout", { attempt, maxRetries });
           // Add a small delay between retries
           await new Promise(resolve => setTimeout(resolve, 500));
           continue;
@@ -114,7 +191,6 @@
 
   function getIdFromPath(regex) {
     const m = window.location.pathname.match(regex);
-    DiceRLogger.log("info", "getIdFromPath", { regex: regex.toString(), result: m ? m[1] : null });
     return m ? m[1] : null;
   }
 
@@ -128,22 +204,18 @@
       'Studio': 'Studios',
       'Group': 'Groups'
     };
-    const plural = pluralMap[entity] || entity + "s";
-    DiceRLogger.log("info", "getPlural", { entity, plural });
-    return plural;
+    return pluralMap[entity] || entity + "s";
   }
 
   function getCacheKey(entity, internalFilter) {
     const filterKey = internalFilter ? JSON.stringify(internalFilter) : 'global';
     // Limit cache key length to prevent storage issues
     const cacheKey = `randomData_${entity}_${filterKey.substring(0, 100)}`;
-    DiceRLogger.log("info", "getCacheKey", { entity, internalFilter: !!internalFilter, cacheKey });
     return cacheKey;
   }
 
   // Optimized shuffle using Fisher-Yates algorithm
   function shuffleArray(array) {
-    DiceRLogger.log("info", "shuffleArray", { arrayLength: array.length });
     for (let i = array.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [array[i], array[j]] = [array[j], array[i]];
@@ -156,14 +228,15 @@
   ========================== */
 
   class TieredSeenTracker {
-    constructor(cacheKey) {
+    constructor(cacheKey, entity) {
       this.cacheKey = cacheKey;
+      this.entity = entity;
       this.recentKey = `${cacheKey}_recent`;
       this.historyKey = `${cacheKey}_history`;
       this.recentSeen = new Set();
       this.historySeen = new Set();
       this.loadSeenData();
-      DiceRLogger.log("success", "TieredSeenTracker initialized", { 
+      logEntitySuccess(this.entity, "TieredSeenTracker initialized", { 
         cacheKey, 
         recentCount: this.recentSeen.size, 
         historyCount: this.historySeen.size 
@@ -178,12 +251,12 @@
         this.recentSeen = new Set(recentStored ? JSON.parse(recentStored) : []);
         this.historySeen = new Set(historyStored ? JSON.parse(historyStored) : []);
         
-        DiceRLogger.log("success", "Seen data loaded", { 
+        logEntitySuccess(this.entity, "Seen data loaded", { 
           recentLoaded: this.recentSeen.size, 
           historyLoaded: this.historySeen.size 
         });
       } catch (e) {
-        DiceRLogger.log("warn", "Failed to load seen data, using empty sets", e);
+        logEntityWarning(this.entity, "Failed to load seen data, using empty sets", e);
         this.recentSeen = new Set();
         this.historySeen = new Set();
       }
@@ -200,14 +273,14 @@
         localStorage.setItem(this.recentKey, JSON.stringify(Array.from(this.recentSeen)));
         localStorage.setItem(this.historyKey, JSON.stringify(Array.from(this.historySeen)));
         
-        DiceRLogger.log("success", "Seen data saved", { 
+        logEntitySuccess(this.entity, "Seen data saved", { 
           recentCount: this.recentSeen.size,
           historyCount: this.historySeen.size,
           recentChanged: beforeRecent !== this.recentSeen.size,
           historyChanged: beforeHistory !== this.historySeen.size
         });
       } catch (e) {
-        DiceRLogger.log("warn", "Failed to save seen data", e);
+        logEntityWarning(this.entity, "Failed to save seen data", e);
       }
     }
 
@@ -224,7 +297,7 @@
           this.historySeen.add(id);
           this.recentSeen.delete(id);
         });
-        DiceRLogger.log("warn", "Recent seen limit exceeded, demoted items to history", { 
+        logEntityWarning(this.entity, "Recent seen limit exceeded, demoted items to history", { 
           demotedCount: itemsToDemote.length 
         });
       }
@@ -236,14 +309,14 @@
         const excess = historyArray.length - CONFIG.HISTORY_SEEN_LIMIT;
         if (excess > 0) {
           historyArray.slice(0, excess).forEach(id => this.historySeen.delete(id));
-          DiceRLogger.log("warn", "History seen limit exceeded, removed oldest items", { 
+          logEntityWarning(this.entity, "History seen limit exceeded, removed oldest items", { 
             removedCount: excess 
           });
         }
       }
       
       if (initialRecent !== this.recentSeen.size || initialHistory !== this.historySeen.size) {
-        DiceRLogger.log("info", "Size limits maintained", {
+        logEntitySuccess(this.entity, "Size limits maintained", {
           recentBefore: initialRecent,
           recentAfter: this.recentSeen.size,
           historyBefore: initialHistory,
@@ -257,17 +330,15 @@
       const wasNew = !this.recentSeen.has(id);
       this.recentSeen.add(id);
       
-      DiceRLogger.log("success", "Item marked as seen", { 
+      logEntitySuccess(this.entity, "Item marked as seen", { 
         id, 
         isNew: wasNew,
         recentCount: this.recentSeen.size,
         historyCount: this.historySeen.size
       });
       
-      // Auto-save periodically to reduce I/O
-      if (this.recentSeen.size % 10 === 1) {
-        this.saveSeenData();
-      }
+      // Always save to ensure persistence - performance impact is minimal
+      this.saveSeenData();
     }
 
     hasSeen(id) {
@@ -277,7 +348,7 @@
       const isSeen = seenInRecent || seenInHistory;
       
       if (isSeen) {
-        DiceRLogger.log("info", "Item previously seen", { 
+        logEntityAction(this.entity, "Item previously seen", { 
           id, 
           inRecent: seenInRecent, 
           inHistory: seenInHistory 
@@ -289,7 +360,7 @@
 
     getSeenCount() {
       const totalCount = this.recentSeen.size + this.historySeen.size;
-      DiceRLogger.log("info", "Current seen count", { 
+      logEntityAction(this.entity, "Current seen count", { 
         recent: this.recentSeen.size, 
         history: this.historySeen.size, 
         total: totalCount 
@@ -302,7 +373,7 @@
       this.recentSeen.clear();
       this.historySeen.clear();
       this.saveSeenData();
-      DiceRLogger.log("warn", "Seen tracking cleared", { clearedItems: clearedCount });
+      logEntityWarning(this.entity, "Seen tracking cleared", { clearedItems: clearedCount });
     }
   }
 
@@ -311,70 +382,152 @@
   ========================== */
 
   class CachedDataManager {
-    constructor(cacheKey) {
+    constructor(cacheKey, entity, internalFilter) {
       this.cacheKey = cacheKey;
+      this.entity = entity;
+      this.internalFilter = internalFilter;
       this.metadataKey = `${cacheKey}_meta`;
       this.metadata = {
         totalCount: 0,
         lastUpdated: 0,
-        version: 1
+        version: CONFIG.CACHE_VERSION,
+        entity: entity,
+        filter: internalFilter ? JSON.stringify(internalFilter) : 'global'
       };
       this.loadMetadata();
-      DiceRLogger.log("success", "CachedDataManager initialized", { cacheKey });
+      logEntitySuccess(this.entity, "CachedDataManager initialized", { cacheKey, entity });
     }
 
     loadMetadata() {
       try {
         const stored = localStorage.getItem(this.metadataKey);
         if (stored) {
-          this.metadata = JSON.parse(stored);
-          DiceRLogger.log("success", "Metadata loaded", this.metadata);
+          const parsedMetadata = JSON.parse(stored);
+          
+          // Validate cache version and structure
+          if (parsedMetadata.version !== CONFIG.CACHE_VERSION) {
+            logEntityWarning(this.entity, "Cache version mismatch, clearing cache", { 
+              oldVersion: parsedMetadata.version, 
+              newVersion: CONFIG.CACHE_VERSION 
+            });
+            this.clearCache();
+            return;
+          }
+          
+          // Validate entity match
+          if (parsedMetadata.entity !== this.entity) {
+            logEntityWarning(this.entity, "Entity mismatch, clearing cache", { 
+              storedEntity: parsedMetadata.entity, 
+              currentEntity: this.entity 
+            });
+            this.clearCache();
+            return;
+          }
+          
+          // Validate filter match
+          const storedFilter = parsedMetadata.filter;
+          const currentFilter = this.internalFilter ? JSON.stringify(this.internalFilter) : 'global';
+          if (storedFilter !== currentFilter) {
+            logEntityWarning(this.entity, "Filter mismatch, clearing cache", { 
+              storedFilter, 
+              currentFilter 
+            });
+            this.clearCache();
+            return;
+          }
+          
+          this.metadata = parsedMetadata;
+          logEntitySuccess(this.entity, "Metadata loaded and validated", this.metadata);
         }
       } catch (e) {
-        DiceRLogger.log("warn", "Failed to load metadata, using defaults", e);
-        this.metadata = {
-          totalCount: 0,
-          lastUpdated: 0,
-          version: 1
-        };
+        logEntityWarning(this.entity, "Failed to load metadata, using defaults", e);
+        this.clearCache();
       }
     }
 
     saveMetadata() {
       try {
         localStorage.setItem(this.metadataKey, JSON.stringify(this.metadata));
-        DiceRLogger.log("success", "Metadata saved", this.metadata);
+        logEntitySuccess(this.entity, "Metadata saved", this.metadata);
       } catch (e) {
-        DiceRLogger.log("warn", "Failed to save metadata", e);
+        logEntityWarning(this.entity, "Failed to save metadata", e);
       }
     }
 
     needsRefresh() {
       const needsRefresh = Date.now() - this.metadata.lastUpdated > CONFIG.CACHE_REFRESH_INTERVAL;
-      DiceRLogger.log("info", "Cache refresh check", { 
+      const cacheTooOld = Date.now() - this.metadata.lastUpdated > (CONFIG.CACHE_REFRESH_INTERVAL * 3); // Force refresh if very old
+      
+      logEntityAction(this.entity, "Cache refresh check", { 
         needsRefresh, 
+        cacheTooOld,
         lastUpdated: this.metadata.lastUpdated, 
         currentTime: Date.now(),
         interval: CONFIG.CACHE_REFRESH_INTERVAL
       });
-      return needsRefresh;
+      
+      return needsRefresh || cacheTooOld;
     }
 
     updateTotalCount(count) {
       const oldCount = this.metadata.totalCount;
       this.metadata.totalCount = count;
       this.metadata.lastUpdated = Date.now();
+      this.metadata.version = CONFIG.CACHE_VERSION;
+      this.metadata.entity = this.entity;
+      this.metadata.filter = this.internalFilter ? JSON.stringify(this.internalFilter) : 'global';
       this.saveMetadata();
-      DiceRLogger.log("success", "Total count updated", { 
+      logEntitySuccess(this.entity, "Total count updated", { 
         oldCount, 
         newCount: count, 
         updated: this.metadata.lastUpdated 
       });
+      
+      if (isMobile) {
+        count = Math.min(count, CONFIG.MOBILE_MAX_ITEMS_TO_PROCESS);
+      }   
     }
 
     getTotalCount() {
-      DiceRLogger.log("info", "Retrieved total count", { count: this.metadata.totalCount });
+      logEntityAction(this.entity, "Retrieved total count", { count: this.metadata.totalCount });
       return this.metadata.totalCount;
+    }
+
+    clearCache() {
+      this.metadata = {
+        totalCount: 0,
+        lastUpdated: 0,
+        version: CONFIG.CACHE_VERSION,
+        entity: this.entity,
+        filter: this.internalFilter ? JSON.stringify(this.internalFilter) : 'global'
+      };
+      this.saveMetadata();
+      logEntityWarning(this.entity, "Cache cleared and reset");
+    }
+
+    validateCacheIntegrity(cacheDataKey) {
+      try {
+        const stored = localStorage.getItem(cacheDataKey);
+        if (!stored) return false;
+        
+        const parsed = JSON.parse(stored);
+        // Basic structure validation
+        if (!parsed.hasOwnProperty('allIds') || !parsed.hasOwnProperty('remaining')) {
+          logEntityWarning(this.entity, "Cache structure invalid", { hasAllIds: !!parsed.allIds, hasRemaining: !!parsed.remaining });
+          return false;
+        }
+        
+        // Type validation
+        if (!Array.isArray(parsed.allIds) || !Array.isArray(parsed.remaining)) {
+          logEntityWarning(this.entity, "Cache data types invalid");
+          return false;
+        }
+        
+        return true;
+      } catch (e) {
+        logEntityWarning(this.entity, "Cache integrity check failed", e);
+        return false;
+      }
     }
   }
 
@@ -384,39 +537,39 @@
 
   async function randomGlobal(entity, idField, redirectPrefix, internalFilter) {
     rollCount++;
-    DiceRLogger.log("event", `🎲 Roll #${rollCount}`, { entity, internalFilter });
+    logEntityAction(entity, `🎲 Roll #${rollCount}`, { internalFilter });
 
     const cacheKey = getCacheKey(entity, internalFilter);
-	const shouldUseSampling = (entity === "Image" || entity === "Scene" || entity === "Gallery" || entity === "Performer") && !internalFilter;
+    const shouldUseSampling = (entity === "Image" || entity === "Scene" || entity === "Gallery" || entity === "Performer") && !internalFilter;
 
     if (shouldUseSampling) {
-      DiceRLogger.log("info", "Using sampling approach for large collection");
+      logEntityAction(entity, "Using sampling approach for large collection");
       return await randomWithSamplingAndTracking(entity, idField, redirectPrefix, internalFilter, cacheKey);
     }
 
-    DiceRLogger.log("info", "Using full cache approach for smaller collection");
+    logEntityAction(entity, "Using full cache approach for smaller collection");
     return await randomWithFullCache(entity, idField, redirectPrefix, internalFilter, cacheKey);
   }
 
   // Optimized: Hybrid approach for large collections with seen/unseen tracking
   async function randomWithSamplingAndTracking(entity, idField, redirectPrefix, internalFilter, cacheKey) {
     const realEntityPlural = getPlural(entity);
-    const seenTracker = new TieredSeenTracker(cacheKey);
-    const dataManager = new CachedDataManager(cacheKey);
+    const seenTracker = new TieredSeenTracker(cacheKey, entity);
+    const dataManager = new CachedDataManager(cacheKey, entity, internalFilter);
 
     // Refresh total count periodically with timeout handling
     if (dataManager.needsRefresh()) {
-      DiceRLogger.log("info", "Refreshing total count");
+      logEntityAction(entity, "Refreshing total count");
       
       try {
         const count = await retryWithTimeout(() => getTotalCount(entity, internalFilter));
         if (count !== null) {
           dataManager.updateTotalCount(count);
         } else {
-          DiceRLogger.log("warn", "Failed to refresh count, using cached value");
+          logEntityWarning(entity, "Failed to refresh count, using cached value");
         }
       } catch (error) {
-        DiceRLogger.log("error", "Failed to refresh count due to timeout", error);
+        logEntityError(entity, "Failed to refresh count due to timeout", error);
         // Continue with cached value
       }
     }
@@ -426,11 +579,11 @@
     let selectedItem = null;
     let selectedId = null;
 
-    DiceRLogger.log("info", "Starting selection attempts", { maxAttempts: CONFIG.MAX_RETRY_ATTEMPTS });
+    logEntityAction(entity, "Starting selection attempts", { maxAttempts: CONFIG.MAX_RETRY_ATTEMPTS });
 
     while (attempts < CONFIG.MAX_RETRY_ATTEMPTS && !selectedItem) {
       attempts++;
-      DiceRLogger.log("info", `Selection attempt #${attempts}`);
+      logEntityAction(entity, `Selection attempt #${attempts}`);
       
       try {
         const itemResult = await retryWithTimeout(() => getRandomItemBySampling(entity, idField, internalFilter));
@@ -440,23 +593,23 @@
           if (!seenTracker.hasSeen(itemResult.id)) {
             selectedItem = itemResult.item;
             selectedId = itemResult.id;
-            DiceRLogger.log("success", "Found unseen item", { 
+            logEntitySuccess(entity, "Found unseen item", { 
               id: selectedId, 
               attemptsUsed: attempts 
             });
             break;
           } else {
-            DiceRLogger.log("info", "Skipping already seen item", { 
+            logEntityAction(entity, "Skipping already seen item", { 
               id: itemResult.id, 
               attempts 
             });
           }
         } else {
-          DiceRLogger.log("warn", "Failed to get item from sampling", { attempts });
+          logEntityWarning(entity, "Failed to get item from sampling", { attempts });
         }
       } catch (error) {
         if (error.message === 'REQUEST_TIMEOUT') {
-          DiceRLogger.log("warn", "Timeout during sampling attempt", { attempts });
+          logEntityWarning(entity, "Timeout during sampling attempt", { attempts });
         } else {
           throw error;
         }
@@ -465,14 +618,14 @@
 
     // If we couldn't find an unseen item, either reshuffle or pick one anyway
     if (!selectedItem) {
-      DiceRLogger.log("warn", "All items may have been seen, allowing repeats");
+      logEntityWarning(entity, "All items may have been seen, allowing repeats");
       
       // Clear seen tracking to allow repeats if most items have been seen
       const totalCount = dataManager.getTotalCount();
       const seenCount = seenTracker.getSeenCount();
       
       if (seenCount > (totalCount || 10000) * 0.9) {
-        DiceRLogger.log("warn", "Resetting seen tracking - most items seen", { 
+        logEntityWarning(entity, "Resetting seen tracking - most items seen", { 
           seenCount, 
           totalCount, 
           threshold: (totalCount || 10000) * 0.9 
@@ -485,7 +638,7 @@
         if (sampleResult && sampleResult.item) {
           selectedItem = sampleResult.item;
           selectedId = sampleResult.id;
-          DiceRLogger.log("success", "Selected item with repeats allowed", { selectedId });
+          logEntitySuccess(entity, "Selected item with repeats allowed", { selectedId });
         }
       } catch (error) {
         if (error.message !== 'REQUEST_TIMEOUT') {
@@ -498,7 +651,7 @@
       // Mark as seen
       seenTracker.addSeen(selectedId);
 
-      DiceRLogger.log("success", "Selected random item", {
+      logEntitySuccess(entity, "Selected random item", {
         itemId: selectedId,
         seenCount: seenTracker.getSeenCount(),
         totalEstimated: dataManager.getTotalCount()
@@ -506,7 +659,7 @@
 
       window.location.href = `${redirectPrefix}${selectedId}`;
     } else {
-      DiceRLogger.log("error", "Failed to select item after max attempts");
+      logEntityError(entity, "Failed to select item after max attempts");
       alert("Unable to select random item.");
     }
   }
@@ -516,16 +669,16 @@
     const realEntityPlural = getPlural(entity);
     
     try {
-      DiceRLogger.log("info", "Getting random item via sampling", { entity, idField });
+      logEntityAction(entity, "Getting random item via sampling", { idField });
       
       // Get total count
       const totalCount = await getTotalCount(entity, internalFilter);
       if (totalCount === 0) {
-        DiceRLogger.log("warn", "Total count is zero", { entity });
+        logEntityWarning(entity, "Total count is zero");
         return null;
       }
 
-      DiceRLogger.log("info", "Total count retrieved", { totalCount });
+      logEntityAction(entity, "Total count retrieved", { totalCount });
 
       // Generate random page and offset
       const totalPages = Math.ceil(totalCount / CONFIG.PAGE_SIZE);
@@ -534,7 +687,7 @@
       const maxOffset = (randomPage === totalPages - 1) ? itemsInLastPage : CONFIG.PAGE_SIZE;
       const randomOffsetInPage = Math.floor(Math.random() * maxOffset);
 
-      DiceRLogger.log("info", "Sampling parameters", { 
+      logEntityAction(entity, "Sampling parameters", { 
         totalPages, 
         randomPage, 
         itemsInLastPage, 
@@ -547,7 +700,7 @@
       const randomSort = sortOptions[Math.floor(Math.random() * sortOptions.length)];
       const sortDirection = Math.random() > 0.5 ? 'ASC' : 'DESC';
 
-      DiceRLogger.log("info", "Random sort applied", { randomSort, sortDirection });
+      logEntityAction(entity, "Random sort applied", { randomSort, sortDirection });
 
       // Fetch the specific page
       let filterArg = "";
@@ -565,7 +718,7 @@
         filterArg = `, $internal_filter: ${entity}FilterType`;
         filterVar = `, ${entity.toLowerCase()}_filter: $internal_filter`;
         variables.internal_filter = internalFilter;
-        DiceRLogger.log("info", "Applied internal filter", { internalFilter });
+        logEntityAction(entity, "Applied internal filter", { internalFilter });
       }
 
       const pageQuery = `
@@ -576,7 +729,7 @@
         }
       `;
 
-      DiceRLogger.log("info", "Executing GraphQL sampling query", { 
+      logEntityAction(entity, "Executing GraphQL sampling query", { 
         query: pageQuery.substring(0, 100) + "...",
         variables 
       });
@@ -590,20 +743,19 @@
       const data = await response.json();
       
       if (data.errors) {
-        DiceRLogger.log("error", "GraphQL errors in sampling", data.errors);
+        logEntityError(entity, "GraphQL errors in sampling", data.errors);
         return null;
       }
 
       let items = data.data[`find${realEntityPlural}`][idField];
       if (!items || items.length === 0) {
-        DiceRLogger.log("warn", "No items returned from sampling query", { 
-          page: randomPage + 1,
-          entity 
+        logEntityWarning(entity, "No items returned from sampling query", { 
+          page: randomPage + 1
         });
         return null;
       }
 
-      DiceRLogger.log("success", "Sampling query successful", { 
+      logEntitySuccess(entity, "Sampling query successful", { 
         itemCount: items.length,
         page: randomPage + 1 
       });
@@ -612,7 +764,7 @@
       const randomIndex = randomOffsetInPage < items.length ? randomOffsetInPage : Math.floor(Math.random() * items.length);
       const selectedItem = items[randomIndex];
 
-      DiceRLogger.log("success", "Random item selected from page", { 
+      logEntitySuccess(entity, "Random item selected from page", { 
         index: randomIndex, 
         id: selectedItem.id 
       });
@@ -622,7 +774,7 @@
         id: selectedItem.id
       };
     } catch (error) {
-      DiceRLogger.log("error", "Sampling failed", error);
+      logEntityError(entity, "Sampling failed", error);
       throw error;
     }
   }
@@ -631,6 +783,7 @@
   async function randomWithFullCache(entity, idField, redirectPrefix, internalFilter, cacheKey) {
     const realEntityPlural = getPlural(entity);
     const cacheDataKey = `${cacheKey}_ids`;
+    const dataManager = new CachedDataManager(cacheKey, entity, internalFilter);
 
     let filterArg = "";
     let filterVar = "";
@@ -652,8 +805,8 @@
       }
     `;
 
-    DiceRLogger.log("info", "Running full cache GraphQL query", { entity });
-    DiceRLogger.time("GraphQL Request");
+    logEntityAction(entity, "Running full cache GraphQL query");
+    DiceRLogger.time(`${entity} GraphQL Request`);
 
     try {
       const response = await fetchWithTimeout('/graphql', {
@@ -663,79 +816,111 @@
       });
 
       const data = await response.json();
-      DiceRLogger.timeEnd("GraphQL Request");
+      DiceRLogger.timeEnd(`${entity} GraphQL Request`);
 
       if (data.errors) {
-        DiceRLogger.log("error", "GraphQL errors", data.errors);
+        logEntityError(entity, "GraphQL errors", data.errors);
         alert("Error: " + JSON.stringify(data.errors));
         return;
       }
 
       let items = data.data[`find${realEntityPlural}`][idField];
       if (!items || items.length === 0) {
-        DiceRLogger.log("warn", "No results found");
+        logEntityWarning(entity, "No results found");
         alert("No results found.");
         return;
       }
 
       const currentIds = items.map(i => i.id);
-      DiceRLogger.log("success", "Fetched IDs", { count: currentIds.length });
+      logEntitySuccess(entity, "Fetched IDs", { count: currentIds.length });
 
-      // Load cached data
+      // Load cached data with validation
       let stored = getCachedData(cacheDataKey);
       
+      // Validate cache integrity
+      if (stored && !dataManager.validateCacheIntegrity(cacheDataKey)) {
+        logEntityWarning(entity, "Cache integrity check failed, clearing cache");
+        stored = null;
+      }
+      
       if (!stored) {
-        DiceRLogger.log("warn", "Cache created (first run)");
+        logEntityWarning(entity, "Cache created (first run or invalid)");
         stored = {
           allIds: currentIds,
-          remaining: shuffleArray([...currentIds])
+          remaining: shuffleArray([...currentIds]),
+          version: CONFIG.CACHE_VERSION,
+          entity: entity,
+          filter: internalFilter ? JSON.stringify(internalFilter) : 'global'
         };
         setCachedData(cacheDataKey, stored);
-        DiceRLogger.log("success", "New cache initialized", { 
+        logEntitySuccess(entity, "New cache initialized", { 
           totalItems: stored.allIds.length,
           remainingItems: stored.remaining.length 
         });
       } else {
-        // Incremental update logic
-        const oldAll = new Set(stored.allIds);
-        const currentSet = new Set(currentIds);
-
-        const added = currentIds.filter(id => !oldAll.has(id));
-        const removed = stored.allIds.filter(id => !currentSet.has(id));
-
-        if (added.length > 0 || removed.length > 0) {
-          DiceRLogger.log("warn", "Cache updated (incremental)", {
-            added: added.length,
-            removed: removed.length
+        // Validate cache metadata
+        if (stored.version !== CONFIG.CACHE_VERSION || 
+            stored.entity !== entity || 
+            stored.filter !== (internalFilter ? JSON.stringify(internalFilter) : 'global')) {
+          logEntityWarning(entity, "Cache metadata mismatch, recreating cache", {
+            storedVersion: stored.version,
+            currentVersion: CONFIG.CACHE_VERSION,
+            storedEntity: stored.entity,
+            currentEntity: entity
           });
+          stored = {
+            allIds: currentIds,
+            remaining: shuffleArray([...currentIds]),
+            version: CONFIG.CACHE_VERSION,
+            entity: entity,
+            filter: internalFilter ? JSON.stringify(internalFilter) : 'global'
+          };
+          setCachedData(cacheDataKey, stored);
+        } else {
+          // Incremental update logic
+          const oldAll = new Set(stored.allIds);
+          const currentSet = new Set(currentIds);
 
-          // Remove deleted items from remaining
-          stored.remaining = stored.remaining.filter(id => currentSet.has(id));
-          
-          // Add new items and shuffle them in
-          if (added.length > 0) {
-            const shuffledAdded = shuffleArray([...added]);
-            stored.remaining.push(...shuffledAdded);
-            DiceRLogger.log("info", "Added new items to remaining", { 
-              count: added.length 
+          const added = currentIds.filter(id => !oldAll.has(id));
+          const removed = stored.allIds.filter(id => !currentSet.has(id));
+
+          if (added.length > 0 || removed.length > 0) {
+            logEntityWarning(entity, "Cache updated (incremental)", {
+              added: added.length,
+              removed: removed.length
             });
+
+            // Remove deleted items from remaining
+            stored.remaining = stored.remaining.filter(id => currentSet.has(id));
+            
+            // Add new items and shuffle them in
+            if (added.length > 0) {
+              const shuffledAdded = shuffleArray([...added]);
+              stored.remaining.push(...shuffledAdded);
+              logEntityAction(entity, "Added new items to remaining", { 
+                count: added.length 
+              });
+            }
+            
+            stored.allIds = currentIds;
+            stored.version = CONFIG.CACHE_VERSION;
+            stored.entity = entity;
+            stored.filter = internalFilter ? JSON.stringify(internalFilter) : 'global';
+            setCachedData(cacheDataKey, stored);
           }
           
-          stored.allIds = currentIds;
-          setCachedData(cacheDataKey, stored);
+          logEntityAction(entity, "Cache status", {
+            totalItems: stored.allIds.length,
+            remainingItems: stored.remaining.length
+          });
         }
-        
-        DiceRLogger.log("info", "Cache status", {
-          totalItems: stored.allIds.length,
-          remainingItems: stored.remaining.length
-        });
       }
       
       if (stored.remaining.length === 0) {
-        DiceRLogger.log("warn", "Cache exhausted — reshuffling");
+        logEntityWarning(entity, "Cache exhausted — reshuffling");
         stored.remaining = shuffleArray([...stored.allIds]);
         setCachedData(cacheDataKey, stored);
-        DiceRLogger.log("success", "Cache reshuffled", { 
+        logEntitySuccess(entity, "Cache reshuffled", { 
           newItemCount: stored.remaining.length 
         });
       }
@@ -744,18 +929,18 @@
         const nextId = stored.remaining.pop();
         setCachedData(cacheDataKey, stored);
 
-        DiceRLogger.log("success", "Redirecting", {
+        logEntitySuccess(entity, "Redirecting", {
           nextId,
           remaining: stored.remaining.length
         });
 
         window.location.href = `${redirectPrefix}${nextId}`;
       } else {
-        DiceRLogger.log("error", "No items available to select");
+        logEntityError(entity, "No items available to select");
         alert("No items available to select.");
       }
     } catch (error) {
-      DiceRLogger.log("error", "Cache-based selection failed", error);
+      logEntityError(entity, "Cache-based selection failed", error);
       if (error.message === 'REQUEST_TIMEOUT') {
         alert("Request timed out. Please try again.");
       } else {
@@ -790,7 +975,7 @@
     `;
 
     try {
-      DiceRLogger.log("info", "Fetching total count", { entity });
+      logEntityAction(entity, "Fetching total count");
       
       const response = await fetchWithTimeout('/graphql', {
         method: 'POST',
@@ -804,15 +989,15 @@
       const data = await response.json();
       
       if (data.errors) {
-        DiceRLogger.log("error", "Count query errors", data.errors);
+        logEntityError(entity, "Count query errors", data.errors);
         return null;
       }
       
       const count = data.data[`find${realEntityPlural}`].count;
-      DiceRLogger.log("success", "Total count retrieved", { entity, count });
+      logEntitySuccess(entity, "Total count retrieved", { count });
       return count;
     } catch (error) {
-      DiceRLogger.log("error", "Failed to get count", error);
+      logEntityError(entity, "Failed to get count", error);
       throw error;
     }
   }
@@ -822,172 +1007,180 @@
       const stored = localStorage.getItem(key);
       if (stored) {
         const parsed = JSON.parse(stored);
-        DiceRLogger.log("info", "Cached data retrieved", { key, dataSize: stored.length });
+        logEntityAction("System", "Cached data retrieved", { key, dataSize: stored.length });
         return parsed;
       }
       return null;
     } catch (e) {
-      DiceRLogger.log("warn", "Failed to parse cached data", { key, error: e.message });
+      logEntityWarning("System", "Failed to parse cached data", { key, error: e.message });
       return null;
     }
   }
 
+  // Efficient localStorage management
   function setCachedData(key, data) {
     try {
-      const dataString = JSON.stringify(data);
-      localStorage.setItem(key, dataString);
-      DiceRLogger.log("success", "Data cached", { 
-        key, 
-        dataSize: dataString.length 
-      });
+      // Limit data size on mobile
+      if (isMobile) {
+        const maxSize = 1024 * 1024; // 1MB limit
+        const dataString = JSON.stringify(data);
+        if (dataString.length > maxSize) {
+          // Trim data to fit within limits
+          data.remaining = data.remaining.slice(0, Math.floor(data.remaining.length * 0.7));
+        }
+      }
+      localStorage.setItem(key, JSON.stringify(data));
     } catch (e) {
-      DiceRLogger.log("warn", "Failed to cache data", { key, error: e.message });
+      // Clear cache on quota exceeded
+      if (e.name === 'QuotaExceededError') {
+        localStorage.clear();
+      }
     }
   }
-
+  
   /* ==========================
      BUTTON HANDLER
   ========================== */
 
-	async function randomButtonHandler() {
-	  const pathname = window.location.pathname.replace(/\/$/, ''); // Remove trailing slash
-	  const searchParams = new URLSearchParams(window.location.search);
-	  DiceRLogger.log("event", "Button clicked", { pathname, searchParams: window.location.search });
+  async function randomButtonHandler() {
+    const pathname = window.location.pathname.replace(/\/$/, ''); // Remove trailing slash
+    const searchParams = new URLSearchParams(window.location.search);
+    logEntityAction("System", "Button clicked", { pathname, searchParams: window.location.search });
 
-	  // Handle main galleries list page (with or without filters)
-	  if (pathname === '/galleries') {
-		DiceRLogger.log("info", "Handling galleries page");
-		const filterParam = searchParams.get('c');
-		if (filterParam) {
-		  try {
-			const internalFilter = convertUrlFilterToInternalFilter(filterParam);
-			DiceRLogger.log("info", "Using filter for galleries", { filterParam });
-			return randomGlobal('Gallery', 'galleries', '/galleries/', internalFilter);
-		  } catch (e) {
-			DiceRLogger.log("error", "Failed to convert filters", e);
-			return randomGlobal('Gallery', 'galleries', '/galleries/');
-		  }
-		}
-		return randomGlobal('Gallery', 'galleries', '/galleries/');
-	  }
+    // Handle main galleries list page (with or without filters)
+    if (pathname === '/galleries') {
+      logEntityAction("Gallery", "Handling galleries page");
+      const filterParam = searchParams.get('c');
+      if (filterParam) {
+        try {
+          const internalFilter = convertUrlFilterToInternalFilter(filterParam);
+          logEntityAction("Gallery", "Using filter for galleries", { filterParam });
+          return randomGlobal('Gallery', 'galleries', '/galleries/', internalFilter);
+        } catch (e) {
+          logEntityError("Gallery", "Failed to convert filters", e);
+          return randomGlobal('Gallery', 'galleries', '/galleries/');
+        }
+      }
+      return randomGlobal('Gallery', 'galleries', '/galleries/');
+    }
 
-	  // Handle specific gallery page - should roll to another gallery
-	  let galleryId = getIdFromPath(/^\/galleries\/(\d+)/);
-	  if (galleryId) {
-		DiceRLogger.log("info", "Handling specific gallery page", { galleryId });
-		const filterParam = searchParams.get('c');
-		if (filterParam) {
-		  try {
-			const internalFilter = convertUrlFilterToInternalFilter(filterParam);
-			return randomGlobal('Gallery', 'galleries', '/galleries/', internalFilter);
-		  } catch (e) {
-			DiceRLogger.log("error", "Failed to convert filters", e);
-			return randomGlobal('Gallery', 'galleries', '/galleries/');
-		  }
-		}
-		return randomGlobal('Gallery', 'galleries', '/galleries/');
-	  }
+    // Handle specific gallery page - should roll to another gallery
+    let galleryId = getIdFromPath(/^\/galleries\/(\d+)/);
+    if (galleryId) {
+      logEntityAction("Gallery", "Handling specific gallery page", { galleryId });
+      const filterParam = searchParams.get('c');
+      if (filterParam) {
+        try {
+          const internalFilter = convertUrlFilterToInternalFilter(filterParam);
+          return randomGlobal('Gallery', 'galleries', '/galleries/', internalFilter);
+        } catch (e) {
+          logEntityError("Gallery", "Failed to convert filters", e);
+          return randomGlobal('Gallery', 'galleries', '/galleries/');
+        }
+      }
+      return randomGlobal('Gallery', 'galleries', '/galleries/');
+    }
 
-	  // Handle specific performer page - should roll to another performer
-	  let performerPageId = getIdFromPath(/^\/performers\/(\d+)/);
-	  if (performerPageId) {
-		DiceRLogger.log("info", "Handling specific performer page", { performerPageId });
-		// Always roll to another performer, never content from this performer
-		return randomGlobal('Performer', 'performers', '/performers/');
-	  }
+    // Handle specific performer page - should roll to another performer
+    let performerPageId = getIdFromPath(/^\/performers\/(\d+)/);
+    if (performerPageId) {
+      logEntityAction("Performer", "Handling specific performer page", { performerPageId });
+      // Always roll to another performer, never content from this performer
+      return randomGlobal('Performer', 'performers', '/performers/');
+    }
 
-	  // Handle specific studio page - should roll to another studio
-	  // This regex matches /studios/{id} even if there are more path segments
-	  let studioMatch = pathname.match(/^\/studios\/(\d+)/);
-	  if (studioMatch) {
-		let studioId = studioMatch[1];
-		DiceRLogger.log("info", "Handling specific studio page", { studioId });
-		return randomGlobal('Studio', 'studios', '/studios/');
-	  }
+    // Handle specific studio page - should roll to another studio
+    // This regex matches /studios/{id} even if there are more path segments
+    let studioMatch = pathname.match(/^\/studios\/(\d+)/);
+    if (studioMatch) {
+      let studioId = studioMatch[1];
+      logEntityAction("Studio", "Handling specific studio page", { studioId });
+      return randomGlobal('Studio', 'studios', '/studios/');
+    }
 
-	  // Handle specific tag page - should roll to another tag
-	  // This regex matches /tags/{id} even if there are more path segments
-	  let tagMatch = pathname.match(/^\/tags\/(\d+)/);
-	  if (tagMatch) {
-		let tagId = tagMatch[1];
-		DiceRLogger.log("info", "Handling specific tag page", { tagId });
-		return randomGlobal('Tag', 'tags', '/tags/');
-	  }
+    // Handle specific tag page - should roll to another tag
+    // This regex matches /tags/{id} even if there are more path segments
+    let tagMatch = pathname.match(/^\/tags\/(\d+)/);
+    if (tagMatch) {
+      let tagId = tagMatch[1];
+      logEntityAction("Tag", "Handling specific tag page", { tagId });
+      return randomGlobal('Tag', 'tags', '/tags/');
+    }
 
-	  // Rest of your existing conditions...
-	  if (pathname === '/scenes' || pathname === '/' || pathname === '' ||
-		  pathname === '/stats' || pathname === '/settings' ||
-		  pathname === '/scenes/markers' || /^\/scenes\/\d+$/.test(pathname)) {
-		DiceRLogger.log("info", "Handling scenes page");
-		return randomGlobal('Scene', 'scenes', '/scenes/');
-	  }
+    // Rest of your existing conditions...
+    if (pathname === '/scenes' || pathname === '/' || pathname === '' ||
+        pathname === '/stats' || pathname === '/settings' ||
+        pathname === '/scenes/markers' || /^\/scenes\/\d+$/.test(pathname)) {
+      logEntityAction("Scene", "Handling scenes page");
+      return randomGlobal('Scene', 'scenes', '/scenes/');
+    }
 
-	  if (pathname === '/images' || /^\/images\/\d+$/.test(pathname)) {
-		DiceRLogger.log("info", "Handling images page");
-		return randomGlobal('Image', 'images', '/images/');
-	  }
+    if (pathname === '/images' || /^\/images\/\d+$/.test(pathname)) {
+      logEntityAction("Image", "Handling images page");
+      return randomGlobal('Image', 'images', '/images/');
+    }
 
-	  if (pathname === '/performers') {
-		DiceRLogger.log("info", "Handling performers page");
-		return randomGlobal('Performer', 'performers', '/performers/');
-	  }
+    if (pathname === '/performers') {
+      logEntityAction("Performer", "Handling performers page");
+      return randomGlobal('Performer', 'performers', '/performers/');
+    }
 
-	  if (pathname === '/studios') {
-		DiceRLogger.log("info", "Handling studios page");
-		return randomGlobal('Studio', 'studios', '/studios/');
-	  }
+    if (pathname === '/studios') {
+      logEntityAction("Studio", "Handling studios page");
+      return randomGlobal('Studio', 'studios', '/studios/');
+    }
 
-	  if (pathname === '/tags') {
-		DiceRLogger.log("info", "Handling tags page");
-		return randomGlobal('Tag', 'tags', '/tags/');
-	  }
+    if (pathname === '/tags') {
+      logEntityAction("Tag", "Handling tags page");
+      return randomGlobal('Tag', 'tags', '/tags/');
+    }
 
-	  if (pathname === '/groups') {
-		DiceRLogger.log("info", "Handling groups page");
-		return randomGlobal('Group', 'groups', '/groups/');
-	  }
+    if (pathname === '/groups') {
+      logEntityAction("Group", "Handling groups page");
+      return randomGlobal('Group', 'groups', '/groups/');
+    }
 
-	  // Handle images within a specific gallery (from gallery image view)
-	  let galleryImageId = getIdFromPath(/^\/galleries\/(\d+)\/images/);
-	  if (galleryImageId) {
-		DiceRLogger.log("info", "Handling gallery images", { galleryImageId });
-		return randomGlobal('Image', 'images', '/images/', {
-		  galleries: { value: [galleryImageId], modifier: "INCLUDES_ALL" }
-		});
-	  }
+    // Handle images within a specific gallery (from gallery image view)
+    let galleryImageId = getIdFromPath(/^\/galleries\/(\d+)\/images/);
+    if (galleryImageId) {
+      logEntityAction("Image", "Handling gallery images", { galleryImageId });
+      return randomGlobal('Image', 'images', '/images/', {
+        galleries: { value: [galleryImageId], modifier: "INCLUDES_ALL" }
+      });
+    }
 
-	  let studioSceneId = getIdFromPath(/^\/studios\/(\d+)\/scenes/);
-	  if (studioSceneId) {
-		DiceRLogger.log("info", "Handling studio scenes", { studioSceneId });
-		return randomGlobal('Scene', 'scenes', '/scenes/', {
-		  studios: { value: [studioSceneId], modifier: "INCLUDES_ALL" }
-		});
-	  }
+    let studioSceneId = getIdFromPath(/^\/studios\/(\d+)\/scenes/);
+    if (studioSceneId) {
+      logEntityAction("Scene", "Handling studio scenes", { studioSceneId });
+      return randomGlobal('Scene', 'scenes', '/scenes/', {
+        studios: { value: [studioSceneId], modifier: "INCLUDES_ALL" }
+      });
+    }
 
-	  let groupId = getIdFromPath(/^\/groups\/(\d+)\/scenes/);
-	  if (groupId) {
-		DiceRLogger.log("info", "Handling group scenes", { groupId });
-		return randomGlobal('Scene', 'scenes', '/scenes/', {
-		  groups: { value: [groupId], modifier: "INCLUDES_ALL" }
-		});
-	  }
+    let groupId = getIdFromPath(/^\/groups\/(\d+)\/scenes/);
+    if (groupId) {
+      logEntityAction("Scene", "Handling group scenes", { groupId });
+      return randomGlobal('Scene', 'scenes', '/scenes/', {
+        groups: { value: [groupId], modifier: "INCLUDES_ALL" }
+      });
+    }
 
-	  let tagSceneId = getIdFromPath(/^\/tags\/(\d+)\/scenes/);
-	  if (tagSceneId) {
-		DiceRLogger.log("info", "Handling tag scenes", { tagSceneId });
-		return randomGlobal('Scene', 'scenes', '/scenes/', {
-		  tags: { value: [tagSceneId], modifier: "INCLUDES_ALL" }
-		});
-	  }
+    let tagSceneId = getIdFromPath(/^\/tags\/(\d+)\/scenes/);
+    if (tagSceneId) {
+      logEntityAction("Scene", "Handling tag scenes", { tagSceneId });
+      return randomGlobal('Scene', 'scenes', '/scenes/', {
+        tags: { value: [tagSceneId], modifier: "INCLUDES_ALL" }
+      });
+    }
 
-	  DiceRLogger.log("error", "Unsupported path", { pathname });
-	  alert('Not supported');
-	}
+    logEntityError("System", "Unsupported path", { pathname });
+    alert('Not supported');
+  }
 
   // Convert URL filter format to internal GraphQL filter format
   function convertUrlFilterToInternalFilter(filterParam) {
     try {
-      DiceRLogger.log("info", "Converting URL filter", { filterParam });
+      logEntityAction("System", "Converting URL filter", { filterParam });
       const decoded = decodeURIComponent(filterParam);
       
       const excludedMatch = decoded.match(/"excluded":$$$(.*?)$$$/);
@@ -1011,16 +1204,16 @@
               modifier: "EXCLUDE"
             }
           };
-          DiceRLogger.log("success", "Converted filter with exclusions", { result });
+          logEntitySuccess("System", "Converted filter with exclusions", { result });
           return result;
         }
       }
       
       const result = {};
-      DiceRLogger.log("info", "Converted filter (no exclusions)", { result });
+      logEntityAction("System", "Converted filter (no exclusions)", { result });
       return result;
     } catch (e) {
-      DiceRLogger.log("error", "Failed to convert filter", { filterParam, error: e.message });
+      logEntityError("System", "Failed to convert filter", { filterParam, error: e.message });
       return {};
     }
   }
@@ -1031,34 +1224,39 @@
 
   function addRandomButton() {
     if (document.querySelector('.random-btn')) {
-      DiceRLogger.log("info", "Random button already exists");
+      logEntityAction("System", "Random button already exists");
       return;
     }
 
     const navContainer = document.querySelector('.navbar-buttons.flex-row.ml-auto.order-xl-2.navbar-nav');
     if (!navContainer) {
-      DiceRLogger.log("warn", "Navigation container not found");
+      logEntityWarning("System", "Navigation container not found");
       return;
     }
 
     const container = document.createElement('div');
     container.className = 'mr-2';
+    
+    // Responsive button design
     container.innerHTML = `
       <a href="javascript:void(0)">
-        <button type="button" class="btn btn-primary random-btn">🎲Roll</button>
+        <button type="button" class="btn btn-primary random-btn d-flex align-items-center">
+          <span class="d-none d-md-inline">🎲Roll</span>
+          <span class="d-inline d-md-none">🎲Roll</span>
+        </button>
       </a>
     `;
 
     const button = container.querySelector('button');
     button.addEventListener('click', async function(e) {
-      DiceRLogger.log("event", "Random button clicked");
+      logEntityAction("System", "Random button clicked");
       
-      const originalText = button.textContent;
+      const originalText = button.innerHTML;
       const originalClasses = button.className;
       
       // Visual feedback states
-      button.textContent = '🎲Rolling...';
-      button.className = 'btn btn-warning random-btn'; // Change to yellow
+      button.innerHTML = '<span class="d-none d-md-inline">🎲Rolling...</span><span class="d-inline d-md-none">🎲Rolling...</span>';
+      button.className = 'btn btn-warning random-btn d-flex align-items-center'; // Change to yellow
       button.disabled = true; // Prevent multiple clicks
       
       try {
@@ -1069,47 +1267,47 @@
         await new Promise(resolve => setTimeout(resolve, 500));
       } catch (error) {
         // Restore button on error
-        button.textContent = originalText;
+        button.innerHTML = originalText;
         button.className = originalClasses;
         button.disabled = false;
         
         // Handle timeout specifically
         if (error.message === 'REQUEST_TIMEOUT') {
-          DiceRLogger.log("error", "Request timed out after all retries");
+          logEntityError("System", "Request timed out after all retries");
           alert('Request timed out. Please try again.');
         } else {
-          DiceRLogger.log("error", "Button handler error", error);
+          logEntityError("System", "Button handler error", error);
         }
       }
     });
 
     navContainer.appendChild(container);
-    DiceRLogger.log("success", "Random button added");
+    logEntitySuccess("System", "Random button added");
   }
 
   const observer = new MutationObserver(() => {
     if (document.querySelector('.navbar-buttons.flex-row.ml-auto.order-xl-2.navbar-nav')) {
       addRandomButton();
       observer.disconnect();
-      DiceRLogger.log("event", "Observer disconnected");
+      logEntityAction("System", "Observer disconnected");
     }
   });
 
   observer.observe(document.body, { childList: true, subtree: true });
 
   document.addEventListener('click', () => {
-    DiceRLogger.log("info", "Document click detected");
+    logEntityAction("System", "Document click detected");
     setTimeout(addRandomButton, 1200);
   });
   
   window.addEventListener('popstate', () => {
-    DiceRLogger.log("info", "Popstate detected");
+    logEntityAction("System", "Popstate detected");
     setTimeout(addRandomButton, 1200);
   });
   
   window.addEventListener('hashchange', () => {
-    DiceRLogger.log("info", "Hashchange detected");
+    logEntityAction("System", "Hashchange detected");
     setTimeout(addRandomButton, 1200);
   });
-
+  
 })();
